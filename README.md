@@ -2,6 +2,22 @@
 
 This benchmark compares property-directed reachability with counterexample-guided abstraction refinement (PDR/CEGAR), concrete PDR, and model-level versions of SmartAxe, BridgeFuzz, and Scutum. Bounded breadth-first checking provides a depth-based baseline. The comparison measures what each method can establish on the same finite transition systems.
 
+## VS Code Dev Container
+
+Start Docker Desktop and install the **Dev Containers** extension in VS Code. On Apple Silicon, choose **Dev Containers: Clone Repository in Container Volume** from the Command Palette and paste the GitHub repository URL. If your local checkout is writable from Docker, you can open that folder and choose **Dev Containers: Reopen in Container**. [VS Code guide](https://code.visualstudio.com/docs/devcontainers/containers)
+
+The configuration uses the official Isabelle2026 ARM image for Apple Silicon. On an x86-64 host, set `build.args.ISABELLE_IMAGE` in `.devcontainer/devcontainer.json` to `makarius/isabelle:Isabelle2026` before opening the container.
+
+In the VS Code terminal, build the theories and run a quick check. Then run the full comparison when you're ready. The separate output directory keeps the published measurements available.
+
+```sh
+isabelle build -d . Bridge_Benchmark
+python3 run_benchmark.py --oracle-only --case once-reference/1 --output /tmp/bridge-smoke
+python3 run_benchmark.py --output results-local
+```
+
+If a local checkout is mounted read-only for the container user, use `--output /tmp/bridge-results` for the full run.
+
 ## Run the benchmark
 
 From the directory containing this README, use Isabelle2026 and Python 3.9 or later on macOS or Linux. The runner builds the Isabelle session, extracts the generated Standard ML, and runs it with Isabelle's bundled Poly/ML. Set `--isabelle` to the path to `bin/isabelle` in your installation.
