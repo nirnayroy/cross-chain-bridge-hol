@@ -1,0 +1,17 @@
+{
+  "transfer_counts": [1, 2],
+  "families": [
+    {"id": 0, "case": "once-reference", "property": "at-most-once credit", "expected": "proved"},
+    {"id": 1, "case": "once-variation", "property": "at-most-once credit", "expected": "violation", "expected_depth": 6},
+    {"id": 2, "case": "backing-reference", "property": "finalized backing", "expected": "proved"},
+    {"id": 3, "case": "backing-variation", "property": "finalized backing", "expected": "violation", "expected_depth": 4},
+    {"id": 4, "case": "exclusivity-reference", "property": "refund and payout exclusivity", "expected": "proved"},
+    {"id": 5, "case": "exclusivity-variation", "property": "refund and payout exclusivity", "expected": "violation", "expected_depth": 6},
+    {"id": 6, "case": "authorization-reference", "property": "credit authorization", "expected": "proved"},
+    {"id": 7, "case": "authorization-variation", "property": "credit authorization", "expected": "violation", "expected_depth": 5},
+    {"id": 8, "case": "agreement-reference", "property": "recipient and amount agreement", "expected": "proved"},
+    {"id": 9, "case": "agreement-variation", "property": "recipient and amount agreement", "expected": "violation", "expected_depth": 5},
+    {"id": 10, "case": "published-fragment", "property": "at-most-once credit", "expected": "proved",
+     "source": "https://github.com/filipmaric/bridge_formalization/tree/c099ef015d76a1749c4c1570083c6ce21bcc4500"}
+  ]
+}
