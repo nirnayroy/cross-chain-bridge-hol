@@ -4,6 +4,9 @@ begin
 
 section \<open>Static checks on the symbolic operation graph\<close>
 
+(* The first constructor requests a guard for a resource. The second requests a
+   flow between two fields for a specific route. Each nat after a constructor
+   describes one argument. *)
 datatype axe_rule =
     RequiresGuard nat nat
   | RequiresFlow nat nat nat
@@ -14,9 +17,14 @@ text \<open>
   operation so that dependencies on another route cannot satisfy its rule.
 \<close>
 
+(* Test list membership using list_ex, which asks whether any list element
+   satisfies the supplied equality test. Parenthesized (=) is equality used as
+   a function. *)
 definition adaptation_has :: "'a \<Rightarrow> 'a list \<Rightarrow> bool" where
   "adaptation_has item items = list_ex ((=) item) items"
 
+(* Repeatedly collect destinations of edges whose sources are already reachable.
+   Stop when the set stabilizes or the finite step budget is used. *)
 fun axe_flow_reachable ::
   "nat \<Rightarrow> (nat \<times> nat) list \<Rightarrow> nat list \<Rightarrow> nat list" where
   "axe_flow_reachable 0 edges reached = reached"
@@ -26,6 +34,9 @@ fun axe_flow_reachable ::
      in if enlarged = reached then reached
         else axe_flow_reachable fuel edges enlarged)"
 
+(* For a guard rule, return routes that reach the resource without the guard. For
+   a flow rule, restrict the edges to the requested route and test whether the
+   target field is reachable from the source. *)
 fun axe_rule_alerts ::
   "(nat \<times> nat \<times> nat list) list \<Rightarrow> (nat \<times> nat \<times> nat) list
     \<Rightarrow> axe_rule \<Rightarrow> nat list" where
@@ -37,6 +48,9 @@ fun axe_rule_alerts ::
          reached = axe_flow_reachable (length edges) edges [origin]
      in if adaptation_has destination reached then [] else [operation])"
 
+(* Apply the checks, flatten and deduplicate their route IDs, and return the
+   appropriate alert status. Count the rows inspected as the method's work
+   measure. *)
 definition smart_axe ::
   "(nat \<times> nat \<times> nat list) list \<Rightarrow> (nat \<times> nat \<times> nat) list
     \<Rightarrow> axe_rule list \<Rightarrow> observation" where
@@ -48,12 +62,17 @@ definition smart_axe ::
 
 section \<open>Seeded sampling of model executions\<close>
 
+(* Advance the deterministic pseudo-random generator with multiplication followed
+   by remainder. Equal seeds produce equal sequences. *)
 definition bridge_random :: "nat \<Rightarrow> nat" where
   "bridge_random seed = (48271 * seed) mod 2147483647"
 
+(* Normalize the input seed into the nonzero range used by the generator. *)
 definition bridge_seed :: "nat \<Rightarrow> nat" where
   "bridge_seed seed = 1 + seed mod 2147483646"
 
+(* Filter labeled edges by their source state. For each matching triple the
+   remaining pair is the event label and destination. *)
 definition bridge_successors ::
   "(nat \<times> nat \<times> nat) list \<Rightarrow> nat \<Rightarrow> (nat \<times> nat) list" where
   "bridge_successors edges state =
@@ -65,6 +84,9 @@ text \<open>
   An exhausted trial or a dead end leaves no finding and permits a fresh trial.
 \<close>
 
+(* Check the current symbolic observation for failure. If it is safe and depth
+   remains, advance the seed, choose an enabled edge, and recur with the new
+   state. Keep the history reversed for cheap insertion with #. *)
 fun fuzz_trial ::
   "nat \<Rightarrow> (nat \<Rightarrow> (nat \<times> nat) list) \<Rightarrow> nat list
     \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> nat list \<Rightarrow> nat
@@ -80,6 +102,8 @@ fun fuzz_trial ::
            else fuzz_trial depth enabled bad next_seed
              (snd (choices ! (next_seed mod length choices))) (state # history) (Suc steps)))"
 
+(* Pick an initial state and run one trial at a time. Stop at the first violation
+   and retain its path. If all trials finish without one, return NoFinding. *)
 fun fuzz_trials ::
   "nat \<Rightarrow> nat \<Rightarrow> nat list \<Rightarrow> (nat \<Rightarrow> (nat \<times> nat) list)
     \<Rightarrow> nat list \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> observation" where
@@ -94,6 +118,8 @@ fun fuzz_trials ::
              Some path \<Rightarrow> measured (Violation path) total_steps
            | None \<Rightarrow> fuzz_trials trials depth initial enabled bad next_seed total_steps))"
 
+(* Bind the graph's successor lookup into the trial runner and start the
+   generator and work counter. *)
 definition bridge_fuzz ::
   "nat \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> nat list \<Rightarrow> (nat \<times> nat \<times> nat) list
     \<Rightarrow> nat list \<Rightarrow> observation" where
@@ -102,6 +128,9 @@ definition bridge_fuzz ::
 
 section \<open>Goal-directed reduction and sketch feasibility\<close>
 
+(* These aliases name the shape of dependency rows, projected locations, abstract
+   edges, and sketch nodes. A sketch node pairs an abstract location with
+   concrete endpoints and their reversed histories. *)
 type_synonym location_dependencies = "(nat \<times> nat list \<times> nat list) list"
 type_synonym abstract_location = "nat list"
 type_synonym abstract_edge = "abstract_location \<times> nat \<times> abstract_location"
@@ -114,6 +143,9 @@ text \<open>
   determines which suffixes are feasible, so identical frontiers can share work.
 \<close>
 
+(* Starting with goal columns, retain every column read by an event that writes a
+   retained column. Repeat until the retained set stabilizes or the budget
+   ends. *)
 fun scutum_location_closure ::
   "nat \<Rightarrow> location_dependencies \<Rightarrow> nat list \<Rightarrow> nat list" where
   "scutum_location_closure 0 dependencies retained = retained"
@@ -125,11 +157,15 @@ fun scutum_location_closure ::
      in if enlarged = retained then retained
         else scutum_location_closure fuel dependencies enlarged)"
 
+(* Sort and deduplicate goals before computing dependency closure. The number of
+   recorded reads bounds the number of new columns that can be added. *)
 definition scutum_locations :: "location_dependencies \<Rightarrow> nat list \<Rightarrow> nat list" where
   "scutum_locations dependencies goals =
     scutum_location_closure (length (concat (map (fst \<circ> snd) dependencies)))
       dependencies (sort (remdups goals))"
 
+(* Traverse the abstract graph backward from bad locations to find which
+   locations might lead to a violation. *)
 fun scutum_backward ::
   "nat \<Rightarrow> abstract_edge list \<Rightarrow> abstract_location list \<Rightarrow> abstract_location list" where
   "scutum_backward 0 edges cone = cone"
@@ -139,9 +175,13 @@ fun scutum_backward ::
      in if length enlarged = length cone then cone
         else scutum_backward fuel edges enlarged)"
 
+(* Use the sorted concrete endpoint IDs as the identity of a sketch frontier. Two
+   frontiers with the same endpoints can take the same future steps. *)
 definition scutum_frontier :: "sketch_node \<Rightarrow> nat list" where
   "scutum_frontier node = sort (map fst (snd node))"
 
+(* Keep one example path per concrete endpoint. Drop extra paths ending at a
+   state already represented. *)
 fun unique_endpoint_paths ::
   "(nat \<times> nat list) list \<Rightarrow> nat list \<Rightarrow> (nat \<times> nat list) list" where
   "unique_endpoint_paths [] seen = []"
@@ -149,6 +189,9 @@ fun unique_endpoint_paths ::
     (if adaptation_has state seen then unique_endpoint_paths rest seen
      else (state, path) # unique_endpoint_paths rest (state # seen))"
 
+(* Extend each concrete prefix using edges whose event and projected target agree
+   with the abstract choice. An empty result shows that the prefix extension
+   is infeasible. *)
 definition scutum_step ::
   "(nat \<Rightarrow> (nat \<times> nat) list) \<Rightarrow> (nat \<Rightarrow> abstract_location)
     \<Rightarrow> (nat \<times> nat list) list \<Rightarrow> (nat \<times> abstract_location) \<Rightarrow> sketch_node" where
@@ -160,6 +203,8 @@ definition scutum_step ::
                (enabled state))) paths)
      in (destination, unique_endpoint_paths extensions []))"
 
+(* Skip candidates whose concrete frontier is empty or has already been seen. Add
+   each fresh frontier to both the worklist and the seen keys. *)
 fun scutum_enqueue ::
   "sketch_node list \<Rightarrow> nat list list \<Rightarrow> (sketch_node list \<times> nat list list)" where
   "scutum_enqueue [] seen = ([], seen)"
@@ -169,6 +214,9 @@ fun scutum_enqueue ::
         else (let (fresh, known) = scutum_enqueue nodes (key # seen)
               in (node # fresh, known)))"
 
+(* Process the queue of feasible prefixes. Check for a bad concrete endpoint,
+   then extend the current prefix within the backward cone. Count blocked
+   candidates and stop with a certificate candidate when the queue is empty. *)
 fun scutum_search ::
   "nat \<Rightarrow> (nat \<Rightarrow> (nat \<times> nat) list) \<Rightarrow> (nat \<Rightarrow> abstract_location)
     \<Rightarrow> abstract_location list \<Rightarrow> abstract_edge list \<Rightarrow> nat list \<Rightarrow> nat list
@@ -200,6 +248,10 @@ text \<open>
   inside it. The shared checker decides whether that set is an inductive invariant.
 \<close>
 
+(* Project each state onto the retained columns, build the abstract edge list and
+   backward cone, and seed the queue with the initial states in that cone.
+   States outside the cone can be included in the candidate invariant sent to
+   the shared checker. *)
 definition scutum ::
   "nat \<Rightarrow> nat list \<Rightarrow> nat list \<Rightarrow> (nat \<times> nat \<times> nat) list \<Rightarrow> nat list
     \<Rightarrow> (nat \<Rightarrow> nat list) \<Rightarrow> location_dependencies \<Rightarrow> nat list \<Rightarrow> observation" where
@@ -223,20 +275,29 @@ definition scutum ::
 
 section \<open>Small regression cases\<close>
 
+(* Check that a flow through an intermediate field satisfies the requested
+   source-to-destination link. *)
 lemma smart_axe_follows_transitive_data_flow:
   "outcome (smart_axe [(1, 2, [3])] [(1, 4, 5), (1, 5, 6)]
       [RequiresGuard 2 3, RequiresFlow 1 4 6]) = NoFinding"
   by eval
 
+(* Check that a data-flow edge on one route cannot satisfy a rule for a different
+   route. *)
 lemma smart_axe_checks_dependencies_per_operation:
   "outcome (smart_axe [(1, 2, [])] [(2, 4, 6)] [RequiresFlow 1 4 6]) = Alert [1]"
   by eval
 
+(* Check that one zero-depth trial can still observe a bad initial state and that
+   zero trials produce no finding. *)
 lemma fuzz_handles_initial_bad_and_empty_search:
   "outcome (bridge_fuzz 1 1 0 [0] [] [0]) = Violation [0] \<and>
    outcome (bridge_fuzz 1 0 0 [0] [] [0]) = NoFinding"
   by eval
 
+(* Two concrete states share an abstract location in this example. Verify that
+   Scutum rejects the infeasible continuation and that its certificate passes
+   the invariant checker. *)
 lemma scutum_blocks_a_spurious_sketch:
   "let result = scutum 10 [0, 1, 2, 3] [0] [(0, 0, 1), (2, 1, 3)] [3]
         (\<lambda>state. [if state = 2 then 1 else state]) [] [0]

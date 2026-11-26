@@ -2,52 +2,25 @@
 
 This benchmark compares property-directed reachability with counterexample-guided abstraction refinement (PDR/CEGAR), concrete PDR, and model-level versions of SmartAxe, BridgeFuzz, and Scutum. Bounded breadth-first checking provides a depth-based baseline. The comparison measures what each method can establish on the same finite transition systems.
 
-## VS Code Dev Container
+## Run Isabelle locally
 
-Start Docker Desktop and install the **Dev Containers** extension in VS Code. On Apple Silicon, choose **Dev Containers: Clone Repository in Container Volume** from the Command Palette and paste the GitHub repository URL. If your local checkout is writable from Docker, you can open that folder and choose **Dev Containers: Reopen in Container**. [VS Code guide](https://code.visualstudio.com/docs/devcontainers/containers)
-
-The configuration uses the official Isabelle2026 ARM image for Apple Silicon. On an x86-64 host, set `build.args.ISABELLE_IMAGE` in `.devcontainer/devcontainer.json` to `makarius/isabelle:Isabelle2026` before opening the container.
-
-In the VS Code terminal, build the theories and run a quick check. Then run the full comparison when you're ready. The separate output directory keeps the published measurements available.
+Use Isabelle2026 and Python 3.9 or later. Run these commands from the directory containing this README. On macOS, the first line assumes you installed Isabelle in Applications. Adjust the path if you installed it elsewhere.
 
 ```sh
-isabelle build -d . Bridge_Benchmark
-python3 run_benchmark.py --oracle-only --case once-reference/1 --output /tmp/bridge-smoke
-python3 run_benchmark.py --output results-local
+ISABELLE=/Applications/Isabelle2026.app/Contents/Resources/bin/isabelle
+"$ISABELLE" build -d . Bridge_Benchmark
+python3 run_benchmark.py --isabelle "$ISABELLE" --output results-local
 ```
 
-If a local checkout is mounted read-only for the container user, use `--output /tmp/bridge-results` for the full run.
+To open the theories in Isabelle/jEdit, run `"$ISABELLE" jedit -d . Benchmark.thy`. The `-d .` option tells Isabelle to load the project session from the current directory.
 
-## Run the benchmark
-
-From the directory containing this README, use Isabelle2026 and Python 3.9 or later on macOS or Linux. The runner builds the Isabelle session, extracts the generated Standard ML, and runs it with Isabelle's bundled Poly/ML. Set `--isabelle` to the path to `bin/isabelle` in your installation.
-
-```sh
-python3 run_benchmark.py --isabelle /path/to/Isabelle2026/bin/isabelle
-```
-
-You can also build the theories independently.
-
-```sh
-isabelle build -d . Bridge_Benchmark
-```
-
-The runner writes to `results/` by default. `--output` changes that directory. `--oracle-only` runs just the exhaustive labeling pass. `--help` lists the available options. [Comparison report](results/report.md) · [Raw results](results/runs.jsonl) · [Run metadata](results/metadata.json)
-
-The reference run used the official Isabelle2026 ARM Linux image on Apple Silicon. To rerun with Docker, use the command below. The compiler and GMP package are used inside the disposable container to link the generated Standard ML engine.
-
-```sh
-mkdir -p results
-docker run --rm --user root --entrypoint /bin/bash \
-  --mount "type=bind,source=$PWD,target=/project,readonly" \
-  --mount "type=bind,source=$PWD/results,target=/results" \
-  makarius/isabelle:Isabelle2026_ARM -lc '
-    apt-get update && apt-get install -y --no-install-recommends g++ libgmp-dev &&
-    BRIDGE_ISABELLE_PROFILE=/tmp/bridge-isabelle-results \
-      python3 /project/run_benchmark.py --isabelle /home/isabelle/Isabelle/bin/isabelle --output /results'
-```
+The benchmark command writes new measurements to `results-local/`. Use `--oracle-only` for the exhaustive labeling pass alone. [Published comparison report](results/report.md) · [Raw results](results/runs.jsonl) · [Run metadata](results/metadata.json)
 
 ## Model and labels
+
+If you're new to Isabelle, start with `Core.thy`, then read `Bridge_Model.thy` and `Benchmark.thy`. `Core.thy` shows what counts as a valid certificate or trace. The model supplies the states and transitions, and the benchmark connects them to each method. `PDR.thy` and `Adaptations.thy` explain the individual algorithms. Follow the export at the end of `Benchmark.thy` into `benchmark_driver.ML` and `run_benchmark.py` to see how the report is produced.
+
+In a theory file, `theory` names the module, `imports` declares its dependencies, and `begin` and `end` enclose its contents. In a signature such as `f :: "nat ⇒ bool"`, `::` introduces the type, `nat` means a nonnegative integer, and `⇒` separates the input from the result. In a term such as `f 3`, the space applies the function to its argument. The source spells some symbols as escapes, so `\<Rightarrow>` displays as `⇒` and `\<lambda>` displays as `λ` in Isabelle-aware editors.
 
 `Bridge_Model.thy` defines a finite set of local protocol locations and guarded, labeled transitions. The locations record symbolic observations about submission, source finality, relayer delivery, and destination credit. An event changes one transfer ID at a time. Each instance starts with both modeled chains idle and all transfers absent. The graph permits independent interleaving across IDs, an optional delivery delay, early notices, and a separate scheduler bit. Authentication is a model condition. The asset is fixed and recipient and amount agreement are represented as Boolean observations. The scope is finite-prefix safety.
 

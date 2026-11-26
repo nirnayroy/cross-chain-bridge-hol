@@ -19,11 +19,17 @@ import tempfile
 import time
 
 
+# __file__ is the path to this Python source. Resolve it so the manifest and
+# theories can be found even when you run the script from another directory.
 HERE = Path(__file__).resolve().parent
 SESSION = "Bridge_Benchmark"
+# Order matters. Python uses each tuple position as the method or status number
+# exchanged with Benchmark.thy.
 METHODS = ("oracle", "pdr_cegar", "pdr_concrete", "smartaxe", "bridgefuzz", "scutum", "bmc")
 STATUSES = ("proved", "violation", "alert", "no_finding", "inconclusive", "unsupported")
 DEFINITIVE = {"proved", "violation"}
+# Freeze the experimental budgets and seeds here. Python ignores underscores
+# inside numeric literals, so 10_000 means ten thousand.
 FIXED_BUDGETS = {"oracle": 10_000, "pdr_cegar": 256, "pdr_concrete": 256,
                  "smartaxe": 0, "bridgefuzz": 64, "scutum": 256}
 BMC_DEPTHS = (4, 8, 16)
@@ -31,6 +37,9 @@ FUZZ_SEEDS = tuple(range(1, 31))
 TIMEOUT_SECONDS = 30.0
 
 
+# Run an external command using a list of arguments. **kwargs forwards named
+# options such as cwd or env. On failure, retain both output streams for
+# diagnostics.
 def command_output(args, **kwargs):
     completed = subprocess.run(args, capture_output=True, text=True, **kwargs)
     if completed.returncode:
@@ -39,6 +48,8 @@ def command_output(args, **kwargs):
     return completed.stdout.strip()
 
 
+# Ask Isabelle which directory contains its Poly/ML tools. The nested helper
+# setting reads one plain value at a time.
 def poly_library_dir(isabelle, settings):
     def setting(key):
         return command_output([isabelle, "getenv", "-b", key], env=settings)
@@ -53,6 +64,9 @@ def poly_library_dir(isabelle, settings):
     return directory
 
 
+# Turn the compiled Standard ML object into an executable. The macOS branch
+# links the bundled GMP library explicitly. The Linux branch uses Isabelle's
+# polyc linker wrapper.
 def link_engine(ml_home, work, binary):
     bundled_gmp = ml_home / "libgmp.10.dylib"
     if sys.platform == "darwin" and bundled_gmp.is_file():
@@ -60,13 +74,22 @@ def link_engine(ml_home, work, binary):
         # polyc expects an unversioned link library from its original build host.
         local_gmp = work / bundled_gmp.name
         shutil.copy2(bundled_gmp, local_gmp)
-        command_output(["c++", "-o", str(binary), "bridge-engine.o",
+        command_output(["c++", "-Wl,-headerpad_max_install_names", "-o", str(binary), "bridge-engine.o",
                         str(ml_home / "libpolymain.a"), str(ml_home / "libpolyml.a"),
                         str(local_gmp)], cwd=work)
+        # The dylib records its original install name. Point the new executable
+        # to the copy beside it, then refresh its signature after editing it.
+        install_name = command_output(["otool", "-D", str(local_gmp)]).splitlines()[-1]
+        command_output(["install_name_tool", "-change", install_name,
+                        f"@loader_path/{local_gmp.name}", str(binary)])
+        command_output(["codesign", "--force", "--sign", "-", str(binary)])
     else:
         command_output([str(ml_home / "polyc"), "-o", str(binary), "bridge-engine.o"], cwd=work)
 
 
+# Find Isabelle, build the theory session, export its executable definitions,
+# append the CLI driver, and compile the combined Standard ML into a runnable
+# engine.
 def build_engine(isabelle_arg, work, output):
     isabelle = shutil.which(isabelle_arg)
     if isabelle is None:
@@ -123,12 +146,18 @@ def build_engine(isabelle_arg, work, output):
     }
 
 
+# Read the JSON manifest and combine each case family with each supported
+# transfer count. The final for clauses in the list comprehension produce that
+# cross product.
 def load_cases():
     manifest = json.loads((HERE / "benchmark_cases.json").read_text(encoding="utf-8"))
     return [dict(family, transfers=count, key=f"{family['case']}/{count}")
             for family in manifest["families"] for count in manifest["transfer_counts"]]
 
 
+# yield produces one job at a time. Start with independent reachability, then
+# give bounded checking every depth and fuzzing every seed. The remaining
+# methods run once per case.
 def jobs(oracle_only=False):
     yield "oracle", FIXED_BUDGETS["oracle"], 0
     if oracle_only:
@@ -144,11 +173,16 @@ def jobs(oracle_only=False):
             yield method, FIXED_BUDGETS[method], 0
 
 
+# Kill the process group so a timed-out invocation cannot leave its children
+# running. suppress ignores the race where the group has already finished.
 def stop_process(pid):
     with suppress(ProcessLookupError):
         os.killpg(pid, signal.SIGKILL)
 
 
+# Poll with wait4 to collect both exit status and resource usage. WNOHANG means
+# the call returns immediately if the process still runs. At the deadline, kill
+# the process and then collect its final status.
 def wait_for_job(process, deadline):
     try:
         while True:
@@ -172,6 +206,9 @@ def wait_for_job(process, deadline):
     return True, usage
 
 
+# Start one engine process so each measurement has its own time and memory
+# usage. Capture its streams in temporary files, decode its JSON response, and
+# validate the result shape before adding it to the run log.
 def run_job(engine, case, method, budget, seed, timeout):
     args = [*engine, *map(str, (case["id"], case["transfers"], METHODS.index(method), budget, seed))]
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout, \
@@ -221,6 +258,9 @@ def run_job(engine, case, method, budget, seed, timeout):
                 compute_us=result["compute_us"], evidence=evidence)
 
 
+# Check the oracle against the manifest, then compare definitive method verdicts
+# with the oracle. For bounded checking, also compare the reported finding or
+# miss with the oracle's shortest depth.
 def audit(case, row, oracle):
     status = row["status"]
     if status == "error":
@@ -247,11 +287,15 @@ def audit(case, row, oracle):
     return None
 
 
+# Read the available measurements, convert units with scale, and print the
+# median to three decimal places. Use a dot when there are no measurements.
 def fmt_median(rows, key, scale):
     values = [row[key] / scale for row in rows if row.get(key) is not None]
     return f"{statistics.median(values):.3f}" if values else "·"
 
 
+# Group the raw run rows into method, budget, and case summaries. Each group
+# contributes counts and medians to the Markdown report.
 def report(cases, rows, metadata, failures):
     by_method = defaultdict(list)
     for row in rows:
@@ -363,6 +407,10 @@ def report(cases, rows, metadata, failures):
     return "\n".join(lines)
 
 
+# Set up the command-line options, select cases, prepare the engine, and write
+# metadata. Each case produces an oracle row first. Later rows are written
+# immediately to JSON Lines so completed measurements remain available if the
+# run stops.
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--isabelle", default=os.environ.get("BRIDGE_ISABELLE", "isabelle"))
@@ -420,6 +468,8 @@ def main():
     return int(bool(failures))
 
 
+# Python sets __name__ to "__main__" when this file is run directly. Calling
+# sys.exit with main's result gives the shell a success or failure status.
 if __name__ == "__main__":
     try:
         sys.exit(main())
